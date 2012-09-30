@@ -5,47 +5,34 @@ import java.awt.Graphics;
 import java.awt.Image;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
-import java.io.ByteArrayInputStream;
-import java.util.LinkedList;
-import java.util.Random;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicReference;
+import java.awt.image.BufferedImage;
+import java.util.ArrayList;
 
-import javax.imageio.ImageIO;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 
 import net.jcip.annotations.GuardedBy;
 import net.jcip.annotations.Immutable;
 
-import org.apache.commons.httpclient.HttpClient;
-import org.apache.commons.httpclient.HttpStatus;
-import org.apache.commons.httpclient.methods.GetMethod;
-
 import com.google.common.base.Optional;
 import com.snobwall.transilook.osm.BoundingBox;
 import com.snobwall.transilook.osm.Mercator;
 import com.snobwall.transilook.osm.SlippyUtil;
 
-public class ViewPanel extends JPanel {
+public class ViewPanel extends JPanel implements MapLayerObserver {
 
-    private ExecutorService tileFetchPool = Executors.newFixedThreadPool(15);
-
-//    private AtomicReference<Image> imageRef = new AtomicReference<Image>();
-    private ConcurrentHashMap<TileRef, Optional<Image>> tiles = new ConcurrentHashMap<ViewPanel.TileRef, Optional<Image>>();
-    
-    @GuardedBy("AWT event dispatch thread")
-    private LinkedList<Future<?>> loadTasks = new LinkedList<Future<?>>();
-    
     private int zoom = 14;
     private double lat = 44.64363574997914, lon = -63.60092639923096;
 
     private boolean watchingMouse = false;
     private int mouseLastX, mouseLastY;
-
+    
+    private int lastWidth = -1, lastHeight = -1, lastZoom = -1;
+    private BoundingBox lastBounds;
+    
+    @GuardedBy("AWT EDT")
+    private ArrayList<MapLayer> layers = new ArrayList<MapLayer>();
+    
     public ViewPanel() {
         super();
 
@@ -53,49 +40,22 @@ public class ViewPanel extends JPanel {
     }
 
     @Override
-    public void paint(Graphics g) {
-        super.paint(g);
+    public void paintComponent(Graphics g) {
+        super.paintComponent(g);
 
-        for(Future<?> task : loadTasks) {
-            task.cancel(false);
-        }
-        loadTasks.clear();
+        System.err.println(String.format("%d Repaint", System.currentTimeMillis()));
         
         g.setColor(Color.white);
         g.fillRect(0, 0, getWidth(), getHeight());
-
-        double mercY = Mercator.mercY(lat);
-        double mercX = lon;
-
-        int[] centerTile = SlippyUtil.getTileNumber(mercX, mercY, zoom);
-
-        BoundingBox tileBoundingBox = SlippyUtil.tile2boundingBox(centerTile[0], centerTile[1], zoom);
-
-        // Find out where our location lives in this tile
-        // and remember that screen y is inverted compared to mercator y
-        double yRatio = (mercY - tileBoundingBox.north) / (tileBoundingBox.south - tileBoundingBox.north);
-        double xRatio = (mercX - tileBoundingBox.west) / (tileBoundingBox.east - tileBoundingBox.west);
-
-        int centerTileX = (int) (getWidth() / 2 - (xRatio * 256));
-        int centerTileY = (int) (getHeight() / 2 - (yRatio * 256));
-
-        int numXTilesOnLeft = (int) Math.ceil(centerTileX / 256.0);
-        int leftTileIdx = centerTile[0] - numXTilesOnLeft;
-        int leftTilePos = centerTileX - (numXTilesOnLeft * 256);
-
-        int numYTilesOnTop = (int) Math.ceil(centerTileY / 256.0);
-        int topTileIdx = centerTile[1] - numYTilesOnTop;
-        int topTilePos = centerTileY - (numYTilesOnTop * 256);
-
-        for (int y = 0; topTilePos + y * 256 < getHeight(); y++) {
-            for (int x = 0; leftTilePos + x * 256 < getWidth(); x++) {
-                TileRef tile = new TileRef(leftTileIdx + x, topTileIdx + y, zoom);
-                Optional<Image> imageRef = tiles.get(tile);
-                if (imageRef == null) {
-                    fetchTile(tile);
-                } else if (imageRef.isPresent()) {
-                    Image img = imageRef.get();
-                    g.drawImage(img, leftTilePos + x * 256, topTilePos + y * 256, null);
+        
+        updateBounds(false);
+        
+        for(MapLayer l : layers) {
+            Optional<BufferedImage> imgref = l.getLatestLayerImage();
+            if (imgref.isPresent()) {
+                BufferedImage img = imgref.get();
+                if (img.getWidth() == getWidth() && img.getHeight() == getHeight()) {
+                    g.drawImage(img, 0, 0, null);
                 }
             }
         }
@@ -104,62 +64,70 @@ public class ViewPanel extends JPanel {
         g.fillOval(getWidth() / 2, getHeight() / 2, 5, 5);
     }
 
-    private void fetchTile(final TileRef where) {
-        Future<?> taskFuture = tileFetchPool.submit(new Runnable() {
+    private void updateBounds(boolean force) {
+        double mercY = Mercator.mercY(lat);
+        double mercX = lon;
 
-            @Override
-            public void run() {
-                try {
-                    if (tiles.putIfAbsent(where, Optional.<Image> absent()) != null) {
-                        // another thread already started loading this tile: abort immediately
-                        return;
-                    }
-                    HttpClient client = new HttpClient();
-
-                    final String[] prefixes = new String[] { "a", "b", "c" };
-
-                    // Create a method instance.
-                    String tileURL = String.format("http://%s.tile.openstreetmap.org/%d/%d/%d.png", prefixes[new Random().nextInt(prefixes.length)],
-                            where.zoom, where.x, where.y);
-                    GetMethod method = new GetMethod(tileURL);
-
-//                    System.err.println("Fetch " + tileURL);
-
-                    int statusCode = client.executeMethod(method);
-                    if (statusCode != HttpStatus.SC_OK) {
-                        System.err.println("Method failed: " + method.getStatusLine());
-                        throw new RuntimeException("Failed to fetch tile from " + tileURL);
-                    }
-                    // Read the response body.
-                    byte[] responseBody = method.getResponseBody();
-
-                    ByteArrayInputStream responseInputStream = new ByteArrayInputStream(responseBody);
-
-                    Image img = ImageIO.read(responseInputStream);
-
-                    tiles.put(where, Optional.of(img));
-
-//                    System.err.println("Got " + tileURL);
-
-                    SwingUtilities.invokeLater(new Runnable() {
-
-                        @Override
-                        public void run() {
-                            repaint();
-                        }
-                    });
-
-                } catch (Throwable e) {
-                    e.printStackTrace();
-                    // fetchTile(where);
-                    tiles.remove(where, Optional.<Image> absent());
-                }
-            }
-        });
+        double mercUnitsPerPixel = SlippyUtil.mercUnitsPerPixel(zoom);
         
-        loadTasks.add(taskFuture);
+        double tlMercX = mercX - mercUnitsPerPixel * (getWidth() / 2);
+        double tlMercY = mercY + mercUnitsPerPixel * (getHeight() / 2);
+        double brMercX = tlMercX + mercUnitsPerPixel * getWidth();
+        double brMercY = tlMercY - mercUnitsPerPixel * getHeight();
+        
+        BoundingBox windowBoundingBox = new BoundingBox(tlMercY, brMercY, brMercX, tlMercX);
+        
+        if (force ||
+                lastWidth != getWidth() || 
+                lastHeight != getHeight() ||
+                lastZoom != zoom ||
+                !windowBoundingBox.equals(lastBounds)) {
+            
+            lastWidth = getWidth();
+            lastHeight = getHeight();
+            lastZoom = zoom;
+            lastBounds = windowBoundingBox;
+            
+            // bounds changed, let's tell everyone
+            for(MapLayer l : layers) {
+                l.updateLayerBounds(getWidth(), getHeight(), windowBoundingBox, zoom);
+            }
+        }
     }
 
+    //
+    // Map layer management
+    //
+    
+    @Override
+    public void notifyImageChanged(MapLayer layer) {
+        SwingUtilities.invokeLater(new Runnable() {
+            
+            @Override
+            public void run() {
+                repaint();
+            }
+        });
+    }
+    
+    public void addLayer(final MapLayer layer) {
+        SwingUtilities.invokeLater(new Runnable() {
+            
+            @Override
+            public void run() {
+                layers.add(layer);
+                layer.registerLayerObserver(ViewPanel.this);
+                updateBounds(true);
+                //layer.updateLayerBounds(getWidth(), getHeight(), , lastZoom);
+                repaint();
+            }
+        });
+    }
+    
+    //
+    // Listeners
+    //
+    
     @Override
     protected void processMouseEvent(MouseEvent e) {
         super.processMouseEvent(e);
@@ -178,9 +146,9 @@ public class ViewPanel extends JPanel {
         super.processMouseMotionEvent(e);
 
         if (watchingMouse) {
-            double deltaX = (e.getX() - mouseLastX) * (SlippyUtil.tileSpan(zoom) / 256.0);
+            double deltaX = (e.getX() - mouseLastX) * SlippyUtil.mercUnitsPerPixel(zoom);
             lon = Mercator.unmercX(Mercator.mercX(lon) - deltaX);
-            double deltaY = (e.getY() - mouseLastY) * (SlippyUtil.tileSpan(zoom) / 256.0);
+            double deltaY = (e.getY() - mouseLastY) * SlippyUtil.mercUnitsPerPixel(zoom);
             lat = Mercator.unmercY(Mercator.mercY(lat) + deltaY);
 
             mouseLastX = e.getX();
@@ -197,9 +165,12 @@ public class ViewPanel extends JPanel {
             int rot = e.getWheelRotation();
             zoom -= (rot / Math.abs(rot));
             repaint();
-
         }
     }
+    
+    //
+    // Inner classes
+    //
 
     @Immutable
     public static class TileRef {
