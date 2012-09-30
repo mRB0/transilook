@@ -25,7 +25,11 @@ public class SlippyUtil {
     }
 
     public static double tileSpan(int zoom) {
-        return 360.0 / Math.pow(2.0, zoom);
+        return mercUnitsPerPixel(zoom) * 256;
+    }
+
+    public static double mercUnitsPerPixel(int zoom) {
+        return 360.0 / Math.pow(2.0, zoom) / 256;
     }
     
     public static double tile2mercX(int x, int z) {
