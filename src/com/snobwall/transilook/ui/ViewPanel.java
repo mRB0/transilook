@@ -43,7 +43,7 @@ public class ViewPanel extends JPanel implements MapLayerObserver {
     public void paintComponent(Graphics g) {
         super.paintComponent(g);
 
-        System.err.println(String.format("%d Repaint", System.currentTimeMillis()));
+//        System.err.println(String.format("%d Repaint", System.currentTimeMillis()));
         
         g.setColor(Color.white);
         g.fillRect(0, 0, getWidth(), getHeight());
@@ -51,13 +51,7 @@ public class ViewPanel extends JPanel implements MapLayerObserver {
         updateBounds(false);
         
         for(MapLayer l : layers) {
-            Optional<BufferedImage> imgref = l.getLatestLayerImage();
-            if (imgref.isPresent()) {
-                BufferedImage img = imgref.get();
-                if (img.getWidth() == getWidth() && img.getHeight() == getHeight()) {
-                    g.drawImage(img, 0, 0, null);
-                }
-            }
+            l.paintLayer(g, getWidth(), getHeight());
         }
 
         g.setColor(Color.red);
@@ -100,7 +94,7 @@ public class ViewPanel extends JPanel implements MapLayerObserver {
     //
     
     @Override
-    public void notifyImageChanged(MapLayer layer) {
+    public void invalidateLayer(MapLayer layer) {
         SwingUtilities.invokeLater(new Runnable() {
             
             @Override
