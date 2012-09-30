@@ -2,19 +2,15 @@ package com.snobwall.transilook.ui;
 
 import java.awt.Color;
 import java.awt.Graphics;
-import java.awt.Image;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
-import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 
 import net.jcip.annotations.GuardedBy;
-import net.jcip.annotations.Immutable;
 
-import com.google.common.base.Optional;
 import com.snobwall.transilook.osm.BoundingBox;
 import com.snobwall.transilook.osm.Mercator;
 import com.snobwall.transilook.osm.SlippyUtil;
@@ -42,8 +38,6 @@ public class ViewPanel extends JPanel implements MapLayerObserver {
     @Override
     public void paintComponent(Graphics g) {
         super.paintComponent(g);
-
-//        System.err.println(String.format("%d Repaint", System.currentTimeMillis()));
         
         g.setColor(Color.white);
         g.fillRect(0, 0, getWidth(), getHeight());
@@ -162,48 +156,4 @@ public class ViewPanel extends JPanel implements MapLayerObserver {
         }
     }
     
-    //
-    // Inner classes
-    //
-
-    @Immutable
-    public static class TileRef {
-        public final int x, y, zoom;
-
-        public TileRef(int x, int y, int zoom) {
-            super();
-            this.x = x;
-            this.y = y;
-            this.zoom = zoom;
-        }
-
-        @Override
-        public int hashCode() {
-            final int prime = 31;
-            int result = 1;
-            result = prime * result + x;
-            result = prime * result + y;
-            result = prime * result + zoom;
-            return result;
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            if (this == obj)
-                return true;
-            if (obj == null)
-                return false;
-            if (getClass() != obj.getClass())
-                return false;
-            TileRef other = (TileRef) obj;
-            if (x != other.x)
-                return false;
-            if (y != other.y)
-                return false;
-            if (zoom != other.zoom)
-                return false;
-            return true;
-        }
-
-    }
 }
