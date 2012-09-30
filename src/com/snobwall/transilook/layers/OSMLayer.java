@@ -2,7 +2,6 @@ package com.snobwall.transilook.layers;
 
 import java.awt.Graphics;
 import java.awt.Image;
-import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.util.LinkedList;
 import java.util.Random;
@@ -16,6 +15,7 @@ import javax.imageio.ImageIO;
 import javax.swing.SwingUtilities;
 
 import net.jcip.annotations.GuardedBy;
+import net.jcip.annotations.Immutable;
 
 import org.apache.commons.httpclient.HttpClient;
 import org.apache.commons.httpclient.HttpStatus;
@@ -26,8 +26,6 @@ import com.snobwall.transilook.osm.BoundingBox;
 import com.snobwall.transilook.osm.SlippyUtil;
 import com.snobwall.transilook.ui.MapLayer;
 import com.snobwall.transilook.ui.MapLayerObserver;
-import com.snobwall.transilook.ui.ViewPanel;
-import com.snobwall.transilook.ui.ViewPanel.TileRef;
 
 public class OSMLayer implements MapLayer {
 
@@ -35,7 +33,7 @@ public class OSMLayer implements MapLayer {
     private ExecutorService imageUpdateExecutor = Executors.newSingleThreadExecutor();
 
     private ExecutorService tileFetchPool = Executors.newFixedThreadPool(15);
-    private ConcurrentHashMap<TileRef, Optional<Image>> tiles = new ConcurrentHashMap<ViewPanel.TileRef, Optional<Image>>();
+    private ConcurrentHashMap<OSMLayer.TileRef, Optional<Image>> tiles = new ConcurrentHashMap<OSMLayer.TileRef, Optional<Image>>();
     
     @GuardedBy("AWT event dispatch thread")
     private LinkedList<Future<?>> loadTasks = new LinkedList<Future<?>>();
@@ -105,7 +103,7 @@ public class OSMLayer implements MapLayer {
 
                 for (int y = 0; topTilePos + y * 256 < height; y++) {
                     for (int x = 0; leftTilePos + x * 256 < width; x++) {
-                        TileRef tile = new TileRef(leftTileIdx + x, topTileIdx + y, zoom);
+                        OSMLayer.TileRef tile = new OSMLayer.TileRef(leftTileIdx + x, topTileIdx + y, zoom);
                         Optional<Image> imageRef = tiles.get(tile);
                         if (imageRef == null) {
                             fetchTile(tile);
@@ -149,7 +147,7 @@ public class OSMLayer implements MapLayer {
 
         for (int y = 0; topTilePos + y * 256 < height; y++) {
             for (int x = 0; leftTilePos + x * 256 < width; x++) {
-                TileRef tile = new TileRef(leftTileIdx + x, topTileIdx + y, zoom);
+                OSMLayer.TileRef tile = new OSMLayer.TileRef(leftTileIdx + x, topTileIdx + y, zoom);
                 Optional<Image> imageRef = tiles.get(tile);
                 if (imageRef != null && imageRef.isPresent()) {
                     Image img = imageRef.get();
@@ -160,7 +158,7 @@ public class OSMLayer implements MapLayer {
 
     }
     
-    private void fetchTile(final TileRef where) {
+    private void fetchTile(final OSMLayer.TileRef where) {
         Future<?> taskFuture = tileFetchPool.submit(new Runnable() {
 
             @Override
@@ -178,8 +176,6 @@ public class OSMLayer implements MapLayer {
                     String tileURL = String.format("http://%s.tile.openstreetmap.org/%d/%d/%d.png", prefixes[new Random().nextInt(prefixes.length)],
                             where.zoom, where.x, where.y);
                     GetMethod method = new GetMethod(tileURL);
-
-//                    System.err.println("Fetch " + tileURL);
 
                     int statusCode = client.executeMethod(method);
                     if (statusCode != HttpStatus.SC_OK) {
@@ -202,7 +198,6 @@ public class OSMLayer implements MapLayer {
                             updateTiles(OSMLayer.this.width, OSMLayer.this.height, OSMLayer.this.boundingBox, OSMLayer.this.zoom);
                         }
                     });
-//                    System.err.println("Got " + tileURL);
 
 
                 } catch (Throwable e) {
@@ -216,4 +211,46 @@ public class OSMLayer implements MapLayer {
         loadTasks.add(taskFuture);
     }
     
+
+    @Immutable
+    public static class TileRef {
+        public final int x, y, zoom;
+    
+        public TileRef(int x, int y, int zoom) {
+            super();
+            this.x = x;
+            this.y = y;
+            this.zoom = zoom;
+        }
+    
+        @Override
+        public int hashCode() {
+            final int prime = 31;
+            int result = 1;
+            result = prime * result + x;
+            result = prime * result + y;
+            result = prime * result + zoom;
+            return result;
+        }
+    
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj)
+                return true;
+            if (obj == null)
+                return false;
+            if (getClass() != obj.getClass())
+                return false;
+            TileRef other = (TileRef) obj;
+            if (x != other.x)
+                return false;
+            if (y != other.y)
+                return false;
+            if (zoom != other.zoom)
+                return false;
+            return true;
+        }
+    
+    }
+
 }
