@@ -6,16 +6,20 @@ import java.awt.Image;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.io.ByteArrayInputStream;
+import java.util.LinkedList;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 
 import javax.imageio.ImageIO;
-import javax.swing.JComponent;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
+
+import net.jcip.annotations.GuardedBy;
+import net.jcip.annotations.Immutable;
 
 import org.apache.commons.httpclient.HttpClient;
 import org.apache.commons.httpclient.HttpStatus;
@@ -30,11 +34,17 @@ public class ViewPanel extends JPanel {
 
     private ExecutorService tileFetchPool = Executors.newFixedThreadPool(15);
 
-    private AtomicReference<Image> imageRef = new AtomicReference<Image>();
+//    private AtomicReference<Image> imageRef = new AtomicReference<Image>();
     private ConcurrentHashMap<TileRef, Optional<Image>> tiles = new ConcurrentHashMap<ViewPanel.TileRef, Optional<Image>>();
-
+    
+    @GuardedBy("AWT event dispatch thread")
+    private LinkedList<Future<?>> loadTasks = new LinkedList<Future<?>>();
+    
     private int zoom = 14;
     private double lat = 44.64363574997914, lon = -63.60092639923096;
+
+    private boolean watchingMouse = false;
+    private int mouseLastX, mouseLastY;
 
     public ViewPanel() {
         super();
@@ -46,8 +56,11 @@ public class ViewPanel extends JPanel {
     public void paint(Graphics g) {
         super.paint(g);
 
-        System.err.println("Paint");
-
+        for(Future<?> task : loadTasks) {
+            task.cancel(false);
+        }
+        loadTasks.clear();
+        
         g.setColor(Color.white);
         g.fillRect(0, 0, getWidth(), getHeight());
 
@@ -56,14 +69,12 @@ public class ViewPanel extends JPanel {
 
         int[] centerTile = SlippyUtil.getTileNumber(mercX, mercY, zoom);
 
-        System.err.println(String.format("Center coordinate mercator x, y = %f, %f", mercX, mercY));
-        BoundingBox bb = SlippyUtil.tile2boundingBox(centerTile[0], centerTile[1], zoom);
-        System.err.println("Bounding box of center tile = " + bb);
+        BoundingBox tileBoundingBox = SlippyUtil.tile2boundingBox(centerTile[0], centerTile[1], zoom);
 
-        // SlippyUtil.tileSpan(zoom);
-
-        double yRatio = (mercY - bb.north) / (bb.south - bb.north);
-        double xRatio = (mercX - bb.west) / (bb.east - bb.west);
+        // Find out where our location lives in this tile
+        // and remember that screen y is inverted compared to mercator y
+        double yRatio = (mercY - tileBoundingBox.north) / (tileBoundingBox.south - tileBoundingBox.north);
+        double xRatio = (mercX - tileBoundingBox.west) / (tileBoundingBox.east - tileBoundingBox.west);
 
         int centerTileX = (int) (getWidth() / 2 - (xRatio * 256));
         int centerTileY = (int) (getHeight() / 2 - (yRatio * 256));
@@ -91,30 +102,18 @@ public class ViewPanel extends JPanel {
 
         g.setColor(Color.red);
         g.fillOval(getWidth() / 2, getHeight() / 2, 5, 5);
-
-        // for (int y = 0; y < getHeight() / 256 + 1; y++) {
-        // for (int x = 0; x < getWidth() / 256 + 1; x++) {
-        //
-        // TileRef tile = new TileRef(centerTile[0] + x, centerTile[1] + y,
-        // zoom);
-        // Optional<Image> imageRef = tiles.get(tile);
-        // if (imageRef == null) {
-        // fetchTile(tile);
-        // } else if (imageRef.isPresent()) {
-        // Image img = imageRef.get();
-        // g.drawImage(img, x * 256, y * 256, null);
-        // }
-        // }
-        // }
     }
 
     private void fetchTile(final TileRef where) {
-        tiles.put(where, Optional.<Image> absent());
-        tileFetchPool.submit(new Runnable() {
+        Future<?> taskFuture = tileFetchPool.submit(new Runnable() {
 
             @Override
             public void run() {
                 try {
+                    if (tiles.putIfAbsent(where, Optional.<Image> absent()) != null) {
+                        // another thread already started loading this tile: abort immediately
+                        return;
+                    }
                     HttpClient client = new HttpClient();
 
                     final String[] prefixes = new String[] { "a", "b", "c" };
@@ -124,7 +123,7 @@ public class ViewPanel extends JPanel {
                             where.zoom, where.x, where.y);
                     GetMethod method = new GetMethod(tileURL);
 
-                    System.err.println("Fetch " + tileURL);
+//                    System.err.println("Fetch " + tileURL);
 
                     int statusCode = client.executeMethod(method);
                     if (statusCode != HttpStatus.SC_OK) {
@@ -139,6 +138,8 @@ public class ViewPanel extends JPanel {
                     Image img = ImageIO.read(responseInputStream);
 
                     tiles.put(where, Optional.of(img));
+
+//                    System.err.println("Got " + tileURL);
 
                     SwingUtilities.invokeLater(new Runnable() {
 
@@ -155,10 +156,9 @@ public class ViewPanel extends JPanel {
                 }
             }
         });
+        
+        loadTasks.add(taskFuture);
     }
-
-    private boolean watchingMouse = false;
-    private int mouseLastX, mouseLastY;
 
     @Override
     protected void processMouseEvent(MouseEvent e) {
@@ -201,6 +201,7 @@ public class ViewPanel extends JPanel {
         }
     }
 
+    @Immutable
     public static class TileRef {
         public final int x, y, zoom;
 

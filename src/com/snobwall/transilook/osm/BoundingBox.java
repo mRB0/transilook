@@ -1,5 +1,8 @@
 package com.snobwall.transilook.osm;
 
+import net.jcip.annotations.Immutable;
+
+@Immutable
 public class BoundingBox {
     public final double north, south, east, west;
 
